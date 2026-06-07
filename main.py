@@ -5,6 +5,7 @@ from collections import deque
 from detectors.eye_detector import get_eye_data
 from detectors.mouth_detector import get_mouth_data
 from detectors.head_pose_detector import calculate_head_pose
+from services.driver_state_service import get_driver_state
 
 EAR_THRESHOLD = 0.20
 MIN_EAR = 0.15
@@ -16,6 +17,10 @@ YAWN_FRAMES = 15
 DISTRACTION_FRAMES = 0
 DISTRACTION_THRESHOLD = 20
 DISTRACTION_LIMIT = 30
+PITCH_DOWN_THRESHOLD = -15
+PITCH_UP_THRESHOLD = 20
+VERTICAL_DISTRACTION_FRAMES = 0
+VERTICAL_DISTRACTION_LIMIT = 30
 
 eye_history = deque(maxlen=300)
 
@@ -42,6 +47,11 @@ while True:
     ret, frame = cap.read()
     if not ret:
         break
+    
+    fatigue_detected = False
+    yawn_detected = False
+    distraction_detected = False
+    vertical_distraction_detected = False
 
     # Convert to RGB for MediaPipe
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -96,13 +106,15 @@ while True:
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
             if CLOSED_EYES_FRAMES >= FATIGUE_FRAMES:
+                fatigue_detected = True
                 cv2.putText(frame, "FATIGA DETECTADA", (30, 100),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
                 
-            if len(eye_history) > 0:
-                perclos = sum(eye_history) / len(eye_history)
-            else:
-                perclos = 0
+            perclos = (
+                sum(eye_history) / len(eye_history)
+                if eye_history
+                else 0
+            )
             
             cv2.putText(
                 frame,
@@ -138,6 +150,7 @@ while True:
                 MOUTH_OPEN_FRAMES = 0
             
             if MOUTH_OPEN_FRAMES >= YAWN_FRAMES:
+                yawn_detected = True
                 cv2.putText(frame, "BOSTEZO DETECTADO", (30, 250),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
@@ -158,6 +171,25 @@ while True:
             else:
                 DISTRACTION_FRAMES = 0
                 
+            if (
+                pitch < PITCH_DOWN_THRESHOLD
+                or
+                pitch > PITCH_UP_THRESHOLD
+            ):
+                VERTICAL_DISTRACTION_FRAMES += 1
+            else:
+                VERTICAL_DISTRACTION_FRAMES = 0
+                
+            cv2.putText(
+                frame,
+                f"VERT DISTRACTION: {VERTICAL_DISTRACTION_FRAMES}",
+                (600, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (255,255,0),
+                2
+            )
+                
             cv2.putText(frame,
                 f"DISTRACTION FRAMES: {DISTRACTION_FRAMES}",
                 (30, 550),
@@ -167,6 +199,7 @@ while True:
                 2)
             
             if DISTRACTION_FRAMES >= DISTRACTION_LIMIT:
+                distraction_detected = True
                 cv2.putText(
                     frame,
                     "DISTRACCION DETECTADA",
@@ -176,6 +209,36 @@ while True:
                     (0,0,255),
                     3
                 )
+                
+            if VERTICAL_DISTRACTION_FRAMES >= VERTICAL_DISTRACTION_LIMIT:
+                vertical_distraction_detected = True
+                cv2.putText(
+                    frame,
+                    "DISTRACCION VERTICAL",
+                    (600, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0,0,255),
+                    3
+                )
+                
+            driver_state = get_driver_state(
+                perclos,
+                fatigue_detected,
+                yawn_detected,
+                distraction_detected,
+                vertical_distraction_detected
+            )
+            
+            cv2.putText(
+                frame,
+                f"ESTADO: {driver_state}",
+                (700, 150),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 255),
+                3
+            )
             
             cv2.putText(frame, f"YAW: {yaw:.2f}", (30, 400),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)

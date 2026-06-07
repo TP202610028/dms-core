@@ -7,6 +7,7 @@ from detectors.mouth_detector import get_mouth_data
 from detectors.head_pose_detector import calculate_head_pose
 from services.driver_state_service import get_driver_state
 from services.risk_score_service import (calculate_risk_score, get_risk_level)
+from services.event_logger import log_event
 from config.settings import (
     EAR_THRESHOLD,
     MIN_EAR,
@@ -155,6 +156,7 @@ while True:
             
             if MOUTH_OPEN_FRAMES >= YAWN_FRAMES:
                 yawn_detected = True
+                log_event("YAWN")
                 cv2.putText(frame, "BOSTEZO DETECTADO", (30, 250),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
@@ -204,6 +206,7 @@ while True:
             
             if DISTRACTION_FRAMES >= DISTRACTION_LIMIT:
                 distraction_detected = True
+                log_event("DISTRACTION")
                 cv2.putText(
                     frame,
                     "DISTRACCION DETECTADA",

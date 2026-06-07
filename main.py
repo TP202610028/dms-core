@@ -21,11 +21,19 @@ from config.settings import (
     VERTICAL_DISTRACTION_LIMIT,
     PERCLOS_WINDOW
 )
+from services.calibration_service import (calibrate_ear, calibrate_mar)
+import time
 
 CLOSED_EYES_FRAMES = 0
 MOUTH_OPEN_FRAMES = 0
 DISTRACTION_FRAMES = 0
 VERTICAL_DISTRACTION_FRAMES = 0
+
+ear_samples = []
+mar_samples = []
+calibrated = False
+current_ear_threshold = EAR_THRESHOLD
+current_mar_threshold = MAR_THRESHOLD
 
 eye_history = deque([], maxlen=PERCLOS_WINDOW)
 
@@ -47,6 +55,7 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 cv2.namedWindow("Deteccion Facial", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("Deteccion Facial", 1200, 800)
 
+start_time = time.time()
 while True:
     # Read a frame -> "ret": successful reading | "frame": captured image
     ret, frame = cap.read()
@@ -97,19 +106,60 @@ while True:
                 
             cv2.putText(frame, f"EAR: {ear:.2f}", (30, 150),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+            # =====================================
+            # MOUTH DETECTION (MAR)
+            # =====================================
+            mouth_coords, mar = get_mouth_data(
+                face_landmarks,
+                w,
+                h
+            )
             
-            if ear < EAR_THRESHOLD:
+            # =====================================
+            # CALIBRATION
+            # =====================================
+            if not calibrated:
+
+                ear_samples.append(ear)
+                mar_samples.append(mar)
+
+                elapsed = time.time() - start_time
+
+                cv2.putText(
+                    frame,
+                    "CALIBRANDO...",
+                    (700, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0,255,255),
+                    3
+                )
+
+                if elapsed >= 5:
+
+                    current_ear_threshold = calibrate_ear(ear_samples)
+                    current_mar_threshold = calibrate_mar(mar_samples)
+
+                    calibrated = True
+
+                    print("Calibracion completada")
+                    print("EAR:", current_ear_threshold)
+                    print("MAR:", current_mar_threshold)
+
+                continue
+            
+            if ear < current_ear_threshold:
                 CLOSED_EYES_FRAMES += 1
                 eye_history.append(1)
                 cv2.putText(frame, "OJOS CERRADOS", (30, 50),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
             else:
                 CLOSED_EYES_FRAMES = 0
                 eye_history.append(0)
                 cv2.putText(frame, "OJOS ABIERTOS", (30, 50),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
+
             if CLOSED_EYES_FRAMES >= FATIGUE_FRAMES:
                 fatigue_detected = True
                 cv2.putText(frame, "FATIGA DETECTADA", (30, 100),
@@ -130,15 +180,6 @@ while True:
                 (255,255,255),
                 2
             )
-
-            # =====================================
-            # MOUTH DETECTION (MAR)
-            # =====================================
-            mouth_coords, mar = get_mouth_data(
-                face_landmarks,
-                w,
-                h
-            )
             
             for point in mouth_coords:
                 cv2.circle(frame, point, 2, (255, 0, 0), -1)
@@ -149,7 +190,7 @@ while True:
             cv2.putText(frame, f"MOUTH FRAMES: {MOUTH_OPEN_FRAMES}", (30, 300),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
             
-            if mar > MAR_THRESHOLD:
+            if mar > current_mar_threshold:
                 MOUTH_OPEN_FRAMES += 1
             else:
                 MOUTH_OPEN_FRAMES = 0

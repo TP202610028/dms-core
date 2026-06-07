@@ -2,43 +2,14 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from collections import deque
+from detectors.eye_detector import get_eye_data
+from detectors.mouth_detector import get_mouth_data
+from detectors.head_pose_detector import calculate_head_pose
 
-def euclidean_distance(p1, p2):
-    return np.linalg.norm(np.array(p1) - np.array(p2))
-
-def calculate_ear(eye):
-    p1, p2, p3, p4, p5, p6 = eye
-
-    vertical1 = euclidean_distance(p2, p6)
-    vertical2 = euclidean_distance(p3, p5)
-    horizontal = euclidean_distance(p1, p4)
-    
-    if horizontal == 0:
-        return 0
-
-    ear = (vertical1 + vertical2) / (2.0 * horizontal)
-    return ear
-
-def calculate_mar(mouth):
-    upper_lip, lower_lip, left_corner, right_corner = mouth
-
-    vertical = euclidean_distance(upper_lip, lower_lip)
-    horizontal = euclidean_distance(left_corner, right_corner)
-    
-    if horizontal == 0:
-        return 0
-
-    mar = vertical / horizontal
-    return mar
-
-LEFT_EYE = [33, 160, 158, 133, 153, 144]
-RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 EAR_THRESHOLD = 0.20
 MIN_EAR = 0.15
 CLOSED_EYES_FRAMES = 0
 FATIGUE_FRAMES = 15
-MOUTH = [13, 14, 78, 308]
-HEAD_POSE_POINTS = [1, 33, 263, 61, 291, 199]
 MAR_THRESHOLD = 0.25
 MOUTH_OPEN_FRAMES = 0
 YAWN_FRAMES = 15
@@ -66,15 +37,6 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 cv2.namedWindow("Deteccion Facial", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("Deteccion Facial", 1200, 800)
 
-face_3d = np.array([
-    (0.0, 0.0, 0.0),         # nariz
-    (-30.0, -30.0, -30.0),   # ojo izquierdo
-    (30.0, -30.0, -30.0),    # ojo derecho
-    (-25.0, 30.0, -30.0),    # boca izquierda
-    (25.0, 30.0, -30.0),     # boca derecha
-    (0.0, 65.0, -5.0)        # mentón
-], dtype=np.float64)
-
 while True:
     # Read a frame -> "ret": successful reading | "frame": captured image
     ret, frame = cap.read()
@@ -93,22 +55,18 @@ while True:
             # =====================================
             # EYE DETECTION (EAR)
             # =====================================
-            left_eye_coords = []
-            for idx in LEFT_EYE:
-                landmark = face_landmarks.landmark[idx]
-                x, y = int(landmark.x * w), int(landmark.y * h)
-                left_eye_coords.append((x, y))
-                cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)
-                
-            right_eye_coords = []
-            for idx in RIGHT_EYE:
-                landmark = face_landmarks.landmark[idx]
-                x, y = int(landmark.x * w), int(landmark.y * h)
-                right_eye_coords.append((x, y))
-                cv2.circle(frame, (x, y), 2, (0, 0, 255), -1)
+            (
+                left_eye_coords,
+                right_eye_coords,
+                left_ear,
+                right_ear
+            ) = get_eye_data(face_landmarks, w, h)
             
-            left_ear = calculate_ear(left_eye_coords)
-            right_ear = calculate_ear(right_eye_coords)
+            for point in left_eye_coords:
+                cv2.circle(frame, point, 2, (0, 255, 0), -1)
+
+            for point in right_eye_coords:
+                cv2.circle(frame, point, 2, (0, 0, 255), -1)
             
             left_valid = left_ear > MIN_EAR
             right_valid = right_ear > MIN_EAR
@@ -159,15 +117,14 @@ while True:
             # =====================================
             # MOUTH DETECTION (MAR)
             # =====================================
-            mouth_coords = []
-            for idx in MOUTH:
-                landmark = face_landmarks.landmark[idx]
-                x, y = int(landmark.x * w), int(landmark.y * h)
-                mouth_coords.append((x, y))
-
-                cv2.circle(frame, (x, y), 2, (255, 0, 0), -1)
+            mouth_coords, mar = get_mouth_data(
+                face_landmarks,
+                w,
+                h
+            )
             
-            mar = calculate_mar(mouth_coords)
+            for point in mouth_coords:
+                cv2.circle(frame, point, 2, (255, 0, 0), -1)
             
             cv2.putText(frame, f"MAR: {mar:.2f}", (30, 200),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
@@ -187,44 +144,14 @@ while True:
             # =====================================
             # HEAD POSE LANDMARKS
             # =====================================
-            head_points = []
-
-            for idx in HEAD_POSE_POINTS:
-                landmark = face_landmarks.landmark[idx]
-
-                x = int(landmark.x * w)
-                y = int(landmark.y * h)
-
-                head_points.append((x, y))
-
-                cv2.circle(frame, (x, y), 4, (0, 255, 255), -1)
-                
-            face_2d = np.array(head_points, dtype=np.float64)
-            
-            focal_length = w
-
-            cam_matrix = np.array([
-                [focal_length, 0, w / 2],
-                [0, focal_length, h / 2],
-                [0, 0, 1]
-            ], dtype=np.float64)
-
-            dist_matrix = np.zeros((4, 1), dtype=np.float64)
-            
-            success, rot_vec, trans_vec = cv2.solvePnP(
-                face_3d,
-                face_2d,
-                cam_matrix,
-                dist_matrix
+            pitch, yaw, roll, head_points = calculate_head_pose(
+                face_landmarks,
+                w,
+                h
             )
             
-            rmat, _ = cv2.Rodrigues(rot_vec)
-
-            angles, _, _, _, _, _ = cv2.RQDecomp3x3(rmat)
-
-            pitch = angles[0]
-            yaw = angles[1]
-            roll = angles[2]
+            for point in head_points:
+                cv2.circle(frame, point, 4, (0, 255, 255), -1)
             
             if abs(yaw) > DISTRACTION_THRESHOLD:
                 DISTRACTION_FRAMES += 1

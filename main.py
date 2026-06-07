@@ -6,6 +6,7 @@ from detectors.eye_detector import get_eye_data
 from detectors.mouth_detector import get_mouth_data
 from detectors.head_pose_detector import calculate_head_pose
 from services.driver_state_service import get_driver_state
+from services.risk_score_service import (calculate_risk_score, get_risk_level)
 from config.settings import (
     EAR_THRESHOLD,
     MIN_EAR,
@@ -25,7 +26,7 @@ MOUTH_OPEN_FRAMES = 0
 DISTRACTION_FRAMES = 0
 VERTICAL_DISTRACTION_FRAMES = 0
 
-eye_history = deque(PERCLOS_WINDOW)
+eye_history = deque([], maxlen=PERCLOS_WINDOW)
 
 # Access the module that detects faces with points
 mp_face_mesh = mp.solutions.face_mesh
@@ -233,6 +234,16 @@ while True:
                 vertical_distraction_detected
             )
             
+            risk_score = calculate_risk_score(
+                perclos,
+                fatigue_detected,
+                yawn_detected,
+                distraction_detected,
+                vertical_distraction_detected
+            )
+            
+            risk_level = get_risk_level(risk_score)
+            
             cv2.putText(
                 frame,
                 f"ESTADO: {driver_state}",
@@ -241,6 +252,26 @@ while True:
                 1,
                 (0, 255, 255),
                 3
+            )
+            
+            cv2.putText(
+                frame,
+                f"RIESGO: {risk_score}/100",
+                (700, 200),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0,255,255),
+                3
+            )
+            
+            cv2.putText(
+                frame,
+                f"RISK LEVEL: {risk_level}",
+                (700, 250),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0,255,255),
+                2
             )
             
             cv2.putText(frame, f"YAW: {yaw:.2f}", (30, 400),

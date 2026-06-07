@@ -6,23 +6,26 @@ from detectors.eye_detector import get_eye_data
 from detectors.mouth_detector import get_mouth_data
 from detectors.head_pose_detector import calculate_head_pose
 from services.driver_state_service import get_driver_state
+from config.settings import (
+    EAR_THRESHOLD,
+    MIN_EAR,
+    FATIGUE_FRAMES,
+    MAR_THRESHOLD,
+    YAWN_FRAMES,
+    DISTRACTION_THRESHOLD,
+    DISTRACTION_LIMIT,
+    PITCH_DOWN_THRESHOLD,
+    PITCH_UP_THRESHOLD,
+    VERTICAL_DISTRACTION_LIMIT,
+    PERCLOS_WINDOW
+)
 
-EAR_THRESHOLD = 0.20
-MIN_EAR = 0.15
 CLOSED_EYES_FRAMES = 0
-FATIGUE_FRAMES = 15
-MAR_THRESHOLD = 0.25
 MOUTH_OPEN_FRAMES = 0
-YAWN_FRAMES = 15
 DISTRACTION_FRAMES = 0
-DISTRACTION_THRESHOLD = 20
-DISTRACTION_LIMIT = 30
-PITCH_DOWN_THRESHOLD = -15
-PITCH_UP_THRESHOLD = 20
 VERTICAL_DISTRACTION_FRAMES = 0
-VERTICAL_DISTRACTION_LIMIT = 30
 
-eye_history = deque(maxlen=300)
+eye_history = deque(PERCLOS_WINDOW)
 
 # Access the module that detects faces with points
 mp_face_mesh = mp.solutions.face_mesh

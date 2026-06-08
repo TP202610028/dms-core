@@ -9,7 +9,11 @@ def calibrate_ear(ear_samples):
 
 def calibrate_mar(mar_samples):
     mean_mar = np.mean(mar_samples)
+    std_mar = np.std(mar_samples)
 
-    threshold = mean_mar * 2.5
+    threshold = max(
+        mean_mar + (3 * std_mar),
+        0.15
+    )
 
     return threshold

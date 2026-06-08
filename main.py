@@ -8,6 +8,8 @@ from detectors.head_pose_detector import calculate_head_pose
 from services.driver_state_service import get_driver_state
 from services.risk_score_service import (calculate_risk_score, get_risk_level)
 from services.event_logger import log_event
+from services.calibration_service import (calibrate_ear, calibrate_mar)
+from services.face_selection_service import get_primary_face
 from config.settings import (
     EAR_THRESHOLD,
     MIN_EAR,
@@ -19,16 +21,16 @@ from config.settings import (
     PITCH_DOWN_THRESHOLD,
     PITCH_UP_THRESHOLD,
     VERTICAL_DISTRACTION_LIMIT,
-    PERCLOS_WINDOW
+    PERCLOS_WINDOW,
+    FACE_MISSING_LIMIT
 )
-from services.calibration_service import (calibrate_ear, calibrate_mar)
 import time
 
 CLOSED_EYES_FRAMES = 0
 MOUTH_OPEN_FRAMES = 0
 DISTRACTION_FRAMES = 0
 VERTICAL_DISTRACTION_FRAMES = 0
-
+FACE_MISSING_FRAMES = 0
 ear_samples = []
 mar_samples = []
 calibrated = False
@@ -62,6 +64,7 @@ while True:
     if not ret:
         break
     
+    face_missing_detected = False
     fatigue_detected = False
     yawn_detected = False
     distraction_detected = False
@@ -72,9 +75,17 @@ while True:
     results = face_mesh.process(rgb_frame)
 
     if results.multi_face_landmarks:
+        FACE_MISSING_FRAMES = 0
+        h, w, _ = frame.shape
+        
+        face_landmarks = get_primary_face(
+            results.multi_face_landmarks,
+            w,
+            h
+        )
+        
         # face_landmarks => +-468 points
-        for face_landmarks in results.multi_face_landmarks:
-            h, w, _ = frame.shape
+        if face_landmarks:
             
             # =====================================
             # EYE DETECTION (EAR)
@@ -135,197 +146,221 @@ while True:
                     (0,255,255),
                     3
                 )
+                cv2.putText(
+                    frame,
+                    "MIRE AL FRENTE Y NO HABLE",
+                    (600, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0,255,255),
+                    2
+                )
 
                 if elapsed >= 5:
 
                     current_ear_threshold = calibrate_ear(ear_samples)
                     current_mar_threshold = calibrate_mar(mar_samples)
+                    print("Mean MAR:", np.mean(mar_samples))
+                    print("Std MAR:", np.std(mar_samples))
+                    print("Threshold MAR:", current_mar_threshold)
 
                     calibrated = True
 
                     print("Calibracion completada")
-                    print("EAR:", current_ear_threshold)
-                    print("MAR:", current_mar_threshold)
+                    
+            else:
+                if ear < current_ear_threshold:
+                    CLOSED_EYES_FRAMES += 1
+                    eye_history.append(1)
+                    cv2.putText(frame, "OJOS CERRADOS", (30, 50),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                else:
+                    CLOSED_EYES_FRAMES = 0
+                    eye_history.append(0)
+                    cv2.putText(frame, "OJOS ABIERTOS", (30, 50),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-                continue
-            
-            if ear < current_ear_threshold:
-                CLOSED_EYES_FRAMES += 1
-                eye_history.append(1)
-                cv2.putText(frame, "OJOS CERRADOS", (30, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            else:
-                CLOSED_EYES_FRAMES = 0
-                eye_history.append(0)
-                cv2.putText(frame, "OJOS ABIERTOS", (30, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-            if CLOSED_EYES_FRAMES >= FATIGUE_FRAMES:
-                fatigue_detected = True
-                cv2.putText(frame, "FATIGA DETECTADA", (30, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                if CLOSED_EYES_FRAMES >= FATIGUE_FRAMES:
+                    fatigue_detected = True
+                    cv2.putText(frame, "FATIGA DETECTADA", (30, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                    
+                perclos = (
+                    sum(eye_history) / len(eye_history)
+                    if eye_history
+                    else 0
+                )
                 
-            perclos = (
-                sum(eye_history) / len(eye_history)
-                if eye_history
-                else 0
-            )
-            
-            cv2.putText(
-                frame,
-                f"PERCLOS: {perclos:.2f}",
-                (30, 350),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255,255,255),
-                2
-            )
-            
-            for point in mouth_coords:
-                cv2.circle(frame, point, 2, (255, 0, 0), -1)
-            
-            cv2.putText(frame, f"MAR: {mar:.2f}", (30, 200),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-            
-            cv2.putText(frame, f"MOUTH FRAMES: {MOUTH_OPEN_FRAMES}", (30, 300),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-            
-            if mar > current_mar_threshold:
-                MOUTH_OPEN_FRAMES += 1
-            else:
-                MOUTH_OPEN_FRAMES = 0
-            
-            if MOUTH_OPEN_FRAMES >= YAWN_FRAMES:
-                yawn_detected = True
-                log_event("YAWN")
-                cv2.putText(frame, "BOSTEZO DETECTADO", (30, 250),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-
-            # =====================================
-            # HEAD POSE LANDMARKS
-            # =====================================
-            pitch, yaw, roll, head_points = calculate_head_pose(
-                face_landmarks,
-                w,
-                h
-            )
-            
-            for point in head_points:
-                cv2.circle(frame, point, 4, (0, 255, 255), -1)
-            
-            if abs(yaw) > DISTRACTION_THRESHOLD:
-                DISTRACTION_FRAMES += 1
-            else:
-                DISTRACTION_FRAMES = 0
-                
-            if (
-                pitch < PITCH_DOWN_THRESHOLD
-                or
-                pitch > PITCH_UP_THRESHOLD
-            ):
-                VERTICAL_DISTRACTION_FRAMES += 1
-            else:
-                VERTICAL_DISTRACTION_FRAMES = 0
-                
-            cv2.putText(
-                frame,
-                f"VERT DISTRACTION: {VERTICAL_DISTRACTION_FRAMES}",
-                (600, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255,255,0),
-                2
-            )
-                
-            cv2.putText(frame,
-                f"DISTRACTION FRAMES: {DISTRACTION_FRAMES}",
-                (30, 550),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0,255,255),
-                2)
-            
-            if DISTRACTION_FRAMES >= DISTRACTION_LIMIT:
-                distraction_detected = True
-                log_event("DISTRACTION")
                 cv2.putText(
                     frame,
-                    "DISTRACCION DETECTADA",
-                    (30, 600),
+                    f"PERCLOS: {perclos:.2f}",
+                    (30, 350),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1,
-                    (0,0,255),
+                    (255,255,255),
+                    2
+                )
+                
+                for point in mouth_coords:
+                    cv2.circle(frame, point, 2, (255, 0, 0), -1)
+                
+                cv2.putText(frame, f"MAR: {mar:.2f}", (30, 200),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+                
+                cv2.putText(frame, f"MOUTH FRAMES: {MOUTH_OPEN_FRAMES}", (30, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+                
+                if mar > current_mar_threshold:
+                    MOUTH_OPEN_FRAMES += 1
+                else:
+                    MOUTH_OPEN_FRAMES = 0
+                
+                if MOUTH_OPEN_FRAMES >= YAWN_FRAMES:
+                    yawn_detected = True
+                    log_event("YAWN")
+                    cv2.putText(frame, "BOSTEZO DETECTADO", (30, 250),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+
+                # =====================================
+                # HEAD POSE LANDMARKS
+                # =====================================
+                pitch, yaw, roll, head_points = calculate_head_pose(
+                    face_landmarks,
+                    w,
+                    h
+                )
+                
+                for point in head_points:
+                    cv2.circle(frame, point, 4, (0, 255, 255), -1)
+                
+                if abs(yaw) > DISTRACTION_THRESHOLD:
+                    DISTRACTION_FRAMES += 1
+                else:
+                    DISTRACTION_FRAMES = 0
+                    
+                if (
+                    pitch < PITCH_DOWN_THRESHOLD
+                    or
+                    pitch > PITCH_UP_THRESHOLD
+                ):
+                    VERTICAL_DISTRACTION_FRAMES += 1
+                else:
+                    VERTICAL_DISTRACTION_FRAMES = 0
+                    
+                cv2.putText(
+                    frame,
+                    f"VERT DISTRACTION: {VERTICAL_DISTRACTION_FRAMES}",
+                    (600, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255,255,0),
+                    2
+                )
+                    
+                cv2.putText(frame,
+                    f"DISTRACTION FRAMES: {DISTRACTION_FRAMES}",
+                    (30, 550),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0,255,255),
+                    2)
+                
+                if DISTRACTION_FRAMES >= DISTRACTION_LIMIT:
+                    distraction_detected = True
+                    log_event("DISTRACTION")
+                    cv2.putText(
+                        frame,
+                        "DISTRACCION DETECTADA",
+                        (30, 600),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0,0,255),
+                        3
+                    )
+                    
+                if VERTICAL_DISTRACTION_FRAMES >= VERTICAL_DISTRACTION_LIMIT:
+                    vertical_distraction_detected = True
+                    cv2.putText(
+                        frame,
+                        "DISTRACCION VERTICAL",
+                        (600, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0,0,255),
+                        3
+                    )
+                    
+                driver_state = get_driver_state(
+                    perclos,
+                    fatigue_detected,
+                    yawn_detected,
+                    distraction_detected,
+                    vertical_distraction_detected
+                )
+                
+                risk_score = calculate_risk_score(
+                    perclos,
+                    fatigue_detected,
+                    yawn_detected,
+                    distraction_detected,
+                    vertical_distraction_detected
+                )
+                
+                risk_level = get_risk_level(risk_score)
+                
+                cv2.putText(
+                    frame,
+                    f"ESTADO: {driver_state}",
+                    (700, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 255),
                     3
                 )
                 
-            if VERTICAL_DISTRACTION_FRAMES >= VERTICAL_DISTRACTION_LIMIT:
-                vertical_distraction_detected = True
                 cv2.putText(
                     frame,
-                    "DISTRACCION VERTICAL",
-                    (600, 100),
+                    f"RIESGO: {risk_score}/100",
+                    (700, 200),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1,
-                    (0,0,255),
+                    (0,255,255),
                     3
                 )
                 
-            driver_state = get_driver_state(
-                perclos,
-                fatigue_detected,
-                yawn_detected,
-                distraction_detected,
-                vertical_distraction_detected
-            )
-            
-            risk_score = calculate_risk_score(
-                perclos,
-                fatigue_detected,
-                yawn_detected,
-                distraction_detected,
-                vertical_distraction_detected
-            )
-            
-            risk_level = get_risk_level(risk_score)
-            
-            cv2.putText(
-                frame,
-                f"ESTADO: {driver_state}",
-                (700, 150),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 255),
-                3
-            )
-            
-            cv2.putText(
-                frame,
-                f"RIESGO: {risk_score}/100",
-                (700, 200),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0,255,255),
-                3
-            )
-            
-            cv2.putText(
-                frame,
-                f"RISK LEVEL: {risk_level}",
-                (700, 250),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0,255,255),
-                2
-            )
-            
-            cv2.putText(frame, f"YAW: {yaw:.2f}", (30, 400),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+                cv2.putText(
+                    frame,
+                    f"RISK LEVEL: {risk_level}",
+                    (700, 250),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0,255,255),
+                    2
+                )
+                
+                cv2.putText(frame, f"YAW: {yaw:.2f}", (30, 400),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
 
-            cv2.putText(frame, f"PITCH: {pitch:.2f}", (30, 450),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+                cv2.putText(frame, f"PITCH: {pitch:.2f}", (30, 450),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
 
-            cv2.putText(frame, f"ROLL: {roll:.2f}", (30, 500),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+                cv2.putText(frame, f"ROLL: {roll:.2f}", (30, 500),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+    else:
+        FACE_MISSING_FRAMES += 1
+
+    if FACE_MISSING_FRAMES >= FACE_MISSING_LIMIT:
+        face_missing_detected = True
+        log_event("FACE_LOST")
+        cv2.putText(
+            frame,
+            "CONDUCTOR NO DETECTADO",
+            (700, 350),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0,0,255),
+            3
+        )
 
     # Open a window
     cv2.imshow("Deteccion Facial", frame)

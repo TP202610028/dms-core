@@ -31,11 +31,17 @@ MOUTH_OPEN_FRAMES = 0
 DISTRACTION_FRAMES = 0
 VERTICAL_DISTRACTION_FRAMES = 0
 FACE_MISSING_FRAMES = 0
+baseline_yaw = 0
+baseline_pitch = 0
 ear_samples = []
 mar_samples = []
+yaw_samples = []
+pitch_samples = []
 calibrated = False
 current_ear_threshold = EAR_THRESHOLD
 current_mar_threshold = MAR_THRESHOLD
+face_missing_detected = False
+face_was_missing = False
 
 eye_history = deque([], maxlen=PERCLOS_WINDOW)
 
@@ -64,11 +70,11 @@ while True:
     if not ret:
         break
     
-    face_missing_detected = False
     fatigue_detected = False
     yawn_detected = False
     distraction_detected = False
     vertical_distraction_detected = False
+    face_missing_detected = False
 
     # Convert to RGB for MediaPipe
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -83,6 +89,10 @@ while True:
             w,
             h
         )
+        
+        if face_was_missing:
+            log_event("FACE_RECOVERED")
+            face_was_missing = False
         
         # face_landmarks => +-468 points
         if face_landmarks:
@@ -128,12 +138,23 @@ while True:
             )
             
             # =====================================
+            # HEAD POSE LANDMARKS
+            # =====================================
+            pitch, yaw, roll, head_points = calculate_head_pose(
+                face_landmarks,
+                w,
+                h
+            )
+            
+            # =====================================
             # CALIBRATION
             # =====================================
             if not calibrated:
 
                 ear_samples.append(ear)
                 mar_samples.append(mar)
+                yaw_samples.append(yaw)
+                pitch_samples.append(pitch)
 
                 elapsed = time.time() - start_time
 
@@ -160,6 +181,10 @@ while True:
 
                     current_ear_threshold = calibrate_ear(ear_samples)
                     current_mar_threshold = calibrate_mar(mar_samples)
+                    baseline_yaw = np.mean(yaw_samples)
+                    baseline_pitch = np.mean(pitch_samples)
+                    print("Baseline Yaw:", baseline_yaw)
+                    print("Baseline Pitch:", baseline_pitch)
                     print("Mean MAR:", np.mean(mar_samples))
                     print("Std MAR:", np.std(mar_samples))
                     print("Threshold MAR:", current_mar_threshold)
@@ -220,28 +245,42 @@ while True:
                     log_event("YAWN")
                     cv2.putText(frame, "BOSTEZO DETECTADO", (30, 250),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                
+                yaw_offset = abs(yaw - baseline_yaw)
+                pitch_offset = pitch - baseline_pitch
+                
+                cv2.putText(
+                    frame,
+                    f"YAW OFFSET: {yaw_offset:.2f}",
+                    (700, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255,255,255),
+                    2
+                )
 
-                # =====================================
-                # HEAD POSE LANDMARKS
-                # =====================================
-                pitch, yaw, roll, head_points = calculate_head_pose(
-                    face_landmarks,
-                    w,
-                    h
+                cv2.putText(
+                    frame,
+                    f"PITCH OFFSET: {pitch_offset:.2f}",
+                    (700, 350),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255,255,255),
+                    2
                 )
                 
                 for point in head_points:
                     cv2.circle(frame, point, 4, (0, 255, 255), -1)
                 
-                if abs(yaw) > DISTRACTION_THRESHOLD:
+                if yaw_offset > DISTRACTION_THRESHOLD:
                     DISTRACTION_FRAMES += 1
                 else:
                     DISTRACTION_FRAMES = 0
                     
                 if (
-                    pitch < PITCH_DOWN_THRESHOLD
+                    pitch_offset < PITCH_DOWN_THRESHOLD
                     or
-                    pitch > PITCH_UP_THRESHOLD
+                    pitch_offset > PITCH_UP_THRESHOLD
                 ):
                     VERTICAL_DISTRACTION_FRAMES += 1
                 else:
@@ -351,6 +390,7 @@ while True:
 
     if FACE_MISSING_FRAMES >= FACE_MISSING_LIMIT:
         face_missing_detected = True
+        face_was_missing = True
         log_event("FACE_LOST")
         cv2.putText(
             frame,

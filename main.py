@@ -44,6 +44,10 @@ face_missing_detected = False
 face_was_missing = False
 
 eye_history = deque([], maxlen=PERCLOS_WINDOW)
+ear_history = deque(maxlen=5)
+mar_history = deque(maxlen=5)
+yaw_history = deque(maxlen=5)
+pitch_history = deque(maxlen=5)
 
 # Access the module that detects faces with points
 mp_face_mesh = mp.solutions.face_mesh
@@ -125,7 +129,10 @@ while True:
             else:
                 ear = 1  # avoid false positive
                 
-            cv2.putText(frame, f"EAR: {ear:.2f}", (30, 150),
+            ear_history.append(ear)
+            smooth_ear = sum(ear_history) / len(ear_history)
+            
+            cv2.putText(frame, f"EAR: {smooth_ear:.2f}", (30, 150),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
             # =====================================
@@ -137,6 +144,9 @@ while True:
                 h
             )
             
+            mar_history.append(mar)
+            smooth_mar = sum(mar_history) / len(mar_history)
+            
             # =====================================
             # HEAD POSE LANDMARKS
             # =====================================
@@ -145,6 +155,11 @@ while True:
                 w,
                 h
             )
+            
+            yaw_history.append(yaw)
+            smooth_yaw = sum(yaw_history) / len(yaw_history)
+            pitch_history.append(pitch)
+            smooth_pitch = sum(pitch_history) / len(pitch_history)
             
             # =====================================
             # CALIBRATION
@@ -194,7 +209,7 @@ while True:
                     print("Calibracion completada")
                     
             else:
-                if ear < current_ear_threshold:
+                if smooth_ear < current_ear_threshold:
                     CLOSED_EYES_FRAMES += 1
                     eye_history.append(1)
                     cv2.putText(frame, "OJOS CERRADOS", (30, 50),
@@ -229,13 +244,13 @@ while True:
                 for point in mouth_coords:
                     cv2.circle(frame, point, 2, (255, 0, 0), -1)
                 
-                cv2.putText(frame, f"MAR: {mar:.2f}", (30, 200),
+                cv2.putText(frame, f"MAR: {smooth_mar:.2f}", (30, 200),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
                 
                 cv2.putText(frame, f"MOUTH FRAMES: {MOUTH_OPEN_FRAMES}", (30, 300),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
                 
-                if mar > current_mar_threshold:
+                if smooth_mar > current_mar_threshold:
                     MOUTH_OPEN_FRAMES += 1
                 else:
                     MOUTH_OPEN_FRAMES = 0
@@ -246,8 +261,8 @@ while True:
                     cv2.putText(frame, "BOSTEZO DETECTADO", (30, 250),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
                 
-                yaw_offset = abs(yaw - baseline_yaw)
-                pitch_offset = pitch - baseline_pitch
+                yaw_offset = abs(smooth_yaw - baseline_yaw)
+                pitch_offset = smooth_pitch - baseline_pitch
                 
                 cv2.putText(
                     frame,

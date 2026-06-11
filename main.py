@@ -11,6 +11,8 @@ from services.event_logger import log_event
 from services.calibration_service import (calibrate_ear, calibrate_mar)
 from services.face_selection_service import get_primary_face
 from services.microsleep_service import detect_microsleep
+from services.session_metrics_service import SessionMetrics
+from services.export_service import save_session
 from config.settings import (
     EAR_THRESHOLD,
     MIN_EAR,
@@ -43,7 +45,6 @@ calibrated = False
 current_ear_threshold = EAR_THRESHOLD
 current_mar_threshold = MAR_THRESHOLD
 face_missing_detected = False
-face_was_missing = False
 
 eye_history = deque([], maxlen=PERCLOS_WINDOW)
 ear_history = deque(maxlen=5)
@@ -57,6 +58,8 @@ prev_vertical_distraction = False
 prev_fatigue = False
 prev_microsleep = False
 prev_face_missing = False
+
+session_metrics = SessionMetrics()
 
 # Access the module that detects faces with points
 mp_face_mesh = mp.solutions.face_mesh
@@ -87,7 +90,6 @@ while True:
     yawn_detected = False
     distraction_detected = False
     vertical_distraction_detected = False
-    face_missing_detected = False
     microsleep_detected = False
 
     # Convert to RGB for MediaPipe
@@ -95,6 +97,7 @@ while True:
     results = face_mesh.process(rgb_frame)
 
     if results.multi_face_landmarks:
+        face_missing_detected = False
         FACE_MISSING_FRAMES = 0
         h, w, _ = frame.shape
         
@@ -103,10 +106,6 @@ while True:
             w,
             h
         )
-        
-        if face_was_missing:
-            log_event("FACE_RECOVERED")
-            face_was_missing = False
         
         # face_landmarks => +-468 points
         if face_landmarks:
@@ -249,6 +248,7 @@ while True:
                     if eye_history
                     else 0
                 )
+                session_metrics.add_perclos(perclos)
                 
                 cv2.putText(
                     frame,
@@ -379,13 +379,14 @@ while True:
                     vertical_distraction_detected,
                     microsleep_detected
                 )
-                
+                session_metrics.add_risk(risk_score)
                 risk_level = get_risk_level(risk_score)
                 
                 # =========================
                 # EVENT LOGGER
                 # =========================
                 if yawn_detected and not prev_yawn:
+                    session_metrics.yawns += 1
                     log_event("YAWN_STARTED")
 
                 if not yawn_detected and prev_yawn:
@@ -394,6 +395,7 @@ while True:
                 prev_yawn = yawn_detected
                 
                 if distraction_detected and not prev_distraction:
+                    session_metrics.distractions += 1
                     log_event("DISTRACTION_STARTED")
 
                 if not distraction_detected and prev_distraction:
@@ -402,6 +404,7 @@ while True:
                 prev_distraction = distraction_detected
                 
                 if vertical_distraction_detected and not prev_vertical_distraction:
+                    session_metrics.vertical_distractions += 1
                     log_event("VERTICAL_DISTRACTION_STARTED")
 
                 if (
@@ -413,6 +416,7 @@ while True:
                 prev_vertical_distraction = vertical_distraction_detected
                 
                 if fatigue_detected and not prev_fatigue:
+                    session_metrics.fatigue_events += 1
                     log_event("FATIGUE_STARTED")
 
                 if not fatigue_detected and prev_fatigue:
@@ -421,20 +425,13 @@ while True:
                 prev_fatigue = fatigue_detected
                 
                 if microsleep_detected and not prev_microsleep:
+                    session_metrics.microsleeps += 1
                     log_event("MICROSLEEP_STARTED")
 
                 if not microsleep_detected and prev_microsleep:
                     log_event("MICROSLEEP_ENDED")
 
                 prev_microsleep = microsleep_detected
-                
-                if face_missing_detected and not prev_face_missing:
-                    log_event("FACE_MISSING_STARTED")
-
-                if not face_missing_detected and prev_face_missing:
-                    log_event("FACE_MISSING_ENDED")
-
-                prev_face_missing = face_missing_detected
                 
                 cv2.putText(frame, f"ESTADO: {driver_state}", (700, 150),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255),3)
@@ -455,20 +452,25 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
     else:
         FACE_MISSING_FRAMES += 1
-
-    if FACE_MISSING_FRAMES >= FACE_MISSING_LIMIT:
-        face_missing_detected = True
-        face_was_missing = True
-        log_event("FACE_LOST")
-        cv2.putText(
-            frame,
-            "CONDUCTOR NO DETECTADO",
-            (700, 350),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0,0,255),
-            3
-        )
+        if FACE_MISSING_FRAMES >= FACE_MISSING_LIMIT:
+            face_missing_detected = True
+            cv2.putText(frame, "CONDUCTOR NO DETECTADO", (700, 350),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
+            
+    face_missing_detected = (
+        FACE_MISSING_FRAMES >= FACE_MISSING_LIMIT
+    )
+    
+    if face_missing_detected and not prev_face_missing:
+        session_metrics.face_missing_events += 1
+        log_event("FACE_MISSING_STARTED")
+    if not face_missing_detected and prev_face_missing:
+        log_event("FACE_MISSING_ENDED")
+    prev_face_missing = face_missing_detected
+    
+    if face_missing_detected:
+        cv2.putText(frame, "CONDUCTOR NO DETECTADO", (700, 350),
+            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
 
     # Open a window
     cv2.imshow("Deteccion Facial", frame)
@@ -476,6 +478,20 @@ while True:
     # Escape with "ESC"
     if cv2.waitKey(1) & 0xFF == 27:
         break
+
+#Session Summary
+print("\n===== SESSION SUMMARY =====")
+print("Duration:", session_metrics.duration_seconds())
+print("Yawns:", session_metrics.yawns)
+print("Fatigue Events:", session_metrics.fatigue_events)
+print("Microsleeps:", session_metrics.microsleeps)
+print("Distractions:", session_metrics.distractions)
+print("Vertical Distractions:", session_metrics.vertical_distractions)
+print("Face Missing:", session_metrics.face_missing_events)
+print("Average PERCLOS:", round(session_metrics.average_perclos(), 3))
+print("Average Risk:", round(session_metrics.average_risk(), 2))
+print("Max Risk:", session_metrics.max_risk())
+save_session(session_metrics)
 
 # Free up resources
 cap.release()

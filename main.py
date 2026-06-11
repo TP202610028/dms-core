@@ -10,6 +10,7 @@ from services.risk_score_service import (calculate_risk_score, get_risk_level)
 from services.event_logger import log_event
 from services.calibration_service import (calibrate_ear, calibrate_mar)
 from services.face_selection_service import get_primary_face
+from services.microsleep_service import detect_microsleep
 from config.settings import (
     EAR_THRESHOLD,
     MIN_EAR,
@@ -22,7 +23,8 @@ from config.settings import (
     PITCH_UP_THRESHOLD,
     VERTICAL_DISTRACTION_LIMIT,
     PERCLOS_WINDOW,
-    FACE_MISSING_LIMIT
+    FACE_MISSING_LIMIT,
+    MICROSLEEP_FRAMES
 )
 import time
 
@@ -48,6 +50,13 @@ ear_history = deque(maxlen=5)
 mar_history = deque(maxlen=5)
 yaw_history = deque(maxlen=5)
 pitch_history = deque(maxlen=5)
+
+prev_yawn = False
+prev_distraction = False
+prev_vertical_distraction = False
+prev_fatigue = False
+prev_microsleep = False
+prev_face_missing = False
 
 # Access the module that detects faces with points
 mp_face_mesh = mp.solutions.face_mesh
@@ -79,6 +88,7 @@ while True:
     distraction_detected = False
     vertical_distraction_detected = False
     face_missing_detected = False
+    microsleep_detected = False
 
     # Convert to RGB for MediaPipe
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -225,6 +235,15 @@ while True:
                     cv2.putText(frame, "FATIGA DETECTADA", (30, 100),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
                     
+                microsleep_detected = detect_microsleep(
+                    CLOSED_EYES_FRAMES,
+                    MICROSLEEP_FRAMES
+                )
+                
+                if microsleep_detected:
+                    cv2.putText(frame, "MICROSUENO DETECTADO", (30, 650),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                    
                 perclos = (
                     sum(eye_history) / len(eye_history)
                     if eye_history
@@ -357,40 +376,74 @@ while True:
                     fatigue_detected,
                     yawn_detected,
                     distraction_detected,
-                    vertical_distraction_detected
+                    vertical_distraction_detected,
+                    microsleep_detected
                 )
                 
                 risk_level = get_risk_level(risk_score)
                 
-                cv2.putText(
-                    frame,
-                    f"ESTADO: {driver_state}",
-                    (700, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 255, 255),
-                    3
-                )
+                # =========================
+                # EVENT LOGGER
+                # =========================
+                if yawn_detected and not prev_yawn:
+                    log_event("YAWN_STARTED")
+
+                if not yawn_detected and prev_yawn:
+                    log_event("YAWN_ENDED")
+
+                prev_yawn = yawn_detected
                 
-                cv2.putText(
-                    frame,
-                    f"RIESGO: {risk_score}/100",
-                    (700, 200),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0,255,255),
-                    3
-                )
+                if distraction_detected and not prev_distraction:
+                    log_event("DISTRACTION_STARTED")
+
+                if not distraction_detected and prev_distraction:
+                    log_event("DISTRACTION_ENDED")
+
+                prev_distraction = distraction_detected
                 
-                cv2.putText(
-                    frame,
-                    f"RISK LEVEL: {risk_level}",
-                    (700, 250),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0,255,255),
-                    2
-                )
+                if vertical_distraction_detected and not prev_vertical_distraction:
+                    log_event("VERTICAL_DISTRACTION_STARTED")
+
+                if (
+                    not vertical_distraction_detected
+                    and prev_vertical_distraction
+                ):
+                    log_event("VERTICAL_DISTRACTION_ENDED")
+
+                prev_vertical_distraction = vertical_distraction_detected
+                
+                if fatigue_detected and not prev_fatigue:
+                    log_event("FATIGUE_STARTED")
+
+                if not fatigue_detected and prev_fatigue:
+                    log_event("FATIGUE_ENDED")
+
+                prev_fatigue = fatigue_detected
+                
+                if microsleep_detected and not prev_microsleep:
+                    log_event("MICROSLEEP_STARTED")
+
+                if not microsleep_detected and prev_microsleep:
+                    log_event("MICROSLEEP_ENDED")
+
+                prev_microsleep = microsleep_detected
+                
+                if face_missing_detected and not prev_face_missing:
+                    log_event("FACE_MISSING_STARTED")
+
+                if not face_missing_detected and prev_face_missing:
+                    log_event("FACE_MISSING_ENDED")
+
+                prev_face_missing = face_missing_detected
+                
+                cv2.putText(frame, f"ESTADO: {driver_state}", (700, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255),3)
+                
+                cv2.putText(frame, f"RIESGO: {risk_score}/100", (700, 200),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 3)
+                
+                cv2.putText(frame, f"RISK LEVEL: {risk_level}", (700, 250),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
                 
                 cv2.putText(frame, f"YAW: {yaw:.2f}", (30, 400),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)

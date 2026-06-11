@@ -3,7 +3,8 @@ def calculate_risk_score(
     fatigue_detected,
     yawn_detected,
     distraction_detected,
-    vertical_distraction_detected
+    vertical_distraction_detected,
+    microsleep_detected
 ):
     score = 0
 
@@ -22,7 +23,8 @@ def calculate_risk_score(
     if perclos > 0.30:
         score += 10
         
-    
+    if microsleep_detected:
+        score += 40
 
     return min(score, 100)
 

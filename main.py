@@ -13,6 +13,8 @@ from services.face_selection_service import get_primary_face
 from services.microsleep_service import detect_microsleep
 from services.session_metrics_service import SessionMetrics
 from services.export_service import save_session
+from services.alert_service import play_alert
+from services.capture_service import save_event_frame
 from config.settings import (
     EAR_THRESHOLD,
     MIN_EAR,
@@ -397,6 +399,10 @@ while True:
                 if distraction_detected and not prev_distraction:
                     session_metrics.distractions += 1
                     log_event("DISTRACTION_STARTED")
+                    save_event_frame(
+                        frame,
+                        "distraction"
+                    )
 
                 if not distraction_detected and prev_distraction:
                     log_event("DISTRACTION_ENDED")
@@ -406,6 +412,10 @@ while True:
                 if vertical_distraction_detected and not prev_vertical_distraction:
                     session_metrics.vertical_distractions += 1
                     log_event("VERTICAL_DISTRACTION_STARTED")
+                    save_event_frame(
+                        frame,
+                        "vertical_distraction"
+                    )
 
                 if (
                     not vertical_distraction_detected
@@ -418,6 +428,11 @@ while True:
                 if fatigue_detected and not prev_fatigue:
                     session_metrics.fatigue_events += 1
                     log_event("FATIGUE_STARTED")
+                    play_alert()
+                    save_event_frame(
+                        frame,
+                        "fatigue"
+                    )
 
                 if not fatigue_detected and prev_fatigue:
                     log_event("FATIGUE_ENDED")
@@ -427,6 +442,11 @@ while True:
                 if microsleep_detected and not prev_microsleep:
                     session_metrics.microsleeps += 1
                     log_event("MICROSLEEP_STARTED")
+                    play_alert()
+                    save_event_frame(
+                        frame,
+                        "microsleep"
+                    )
 
                 if not microsleep_detected and prev_microsleep:
                     log_event("MICROSLEEP_ENDED")

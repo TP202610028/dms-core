@@ -5,19 +5,63 @@ from collections import deque
 from detectors.eye_detector import get_eye_data
 from detectors.mouth_detector import get_mouth_data
 from detectors.head_pose_detector import calculate_head_pose
+from services.driver_state_service import get_driver_state
+from services.risk_score_service import (calculate_risk_score, get_risk_level)
+from services.event_logger import log_event
+from services.calibration_service import (calibrate_ear, calibrate_mar)
+from services.face_selection_service import get_primary_face
+from services.microsleep_service import detect_microsleep
+from services.session_metrics_service import SessionMetrics
+from services.export_service import save_session
+from services.alert_service import play_alert
+from services.capture_service import save_event_frame
+from config.settings import (
+    EAR_THRESHOLD,
+    MIN_EAR,
+    FATIGUE_FRAMES,
+    MAR_THRESHOLD,
+    YAWN_FRAMES,
+    DISTRACTION_THRESHOLD,
+    DISTRACTION_LIMIT,
+    PITCH_DOWN_THRESHOLD,
+    PITCH_UP_THRESHOLD,
+    VERTICAL_DISTRACTION_LIMIT,
+    PERCLOS_WINDOW,
+    FACE_MISSING_LIMIT,
+    MICROSLEEP_FRAMES
+)
+import time
 
-EAR_THRESHOLD = 0.20
-MIN_EAR = 0.15
 CLOSED_EYES_FRAMES = 0
-FATIGUE_FRAMES = 15
-MAR_THRESHOLD = 0.25
 MOUTH_OPEN_FRAMES = 0
-YAWN_FRAMES = 15
 DISTRACTION_FRAMES = 0
-DISTRACTION_THRESHOLD = 20
-DISTRACTION_LIMIT = 30
+VERTICAL_DISTRACTION_FRAMES = 0
+FACE_MISSING_FRAMES = 0
+baseline_yaw = 0
+baseline_pitch = 0
+ear_samples = []
+mar_samples = []
+yaw_samples = []
+pitch_samples = []
+calibrated = False
+current_ear_threshold = EAR_THRESHOLD
+current_mar_threshold = MAR_THRESHOLD
+face_missing_detected = False
 
-eye_history = deque(maxlen=300)
+eye_history = deque([], maxlen=PERCLOS_WINDOW)
+ear_history = deque(maxlen=5)
+mar_history = deque(maxlen=5)
+yaw_history = deque(maxlen=5)
+pitch_history = deque(maxlen=5)
+
+prev_yawn = False
+prev_distraction = False
+prev_vertical_distraction = False
+prev_fatigue = False
+prev_microsleep = False
+prev_face_missing = False
+
+session_metrics = SessionMetrics()
 
 # Access the module that detects faces with points
 mp_face_mesh = mp.solutions.face_mesh
@@ -37,20 +81,36 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 cv2.namedWindow("Deteccion Facial", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("Deteccion Facial", 1200, 800)
 
+start_time = time.time()
 while True:
     # Read a frame -> "ret": successful reading | "frame": captured image
     ret, frame = cap.read()
     if not ret:
         break
+    
+    fatigue_detected = False
+    yawn_detected = False
+    distraction_detected = False
+    vertical_distraction_detected = False
+    microsleep_detected = False
 
     # Convert to RGB for MediaPipe
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = face_mesh.process(rgb_frame)
 
     if results.multi_face_landmarks:
+        face_missing_detected = False
+        FACE_MISSING_FRAMES = 0
+        h, w, _ = frame.shape
+        
+        face_landmarks = get_primary_face(
+            results.multi_face_landmarks,
+            w,
+            h
+        )
+        
         # face_landmarks => +-468 points
-        for face_landmarks in results.multi_face_landmarks:
-            h, w, _ = frame.shape
+        if face_landmarks:
             
             # =====================================
             # EYE DETECTION (EAR)
@@ -80,39 +140,11 @@ while True:
             else:
                 ear = 1  # avoid false positive
                 
-            cv2.putText(frame, f"EAR: {ear:.2f}", (30, 150),
+            ear_history.append(ear)
+            smooth_ear = sum(ear_history) / len(ear_history)
+            
+            cv2.putText(frame, f"EAR: {smooth_ear:.2f}", (30, 150),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            
-            if ear < EAR_THRESHOLD:
-                CLOSED_EYES_FRAMES += 1
-                eye_history.append(1)
-                cv2.putText(frame, "OJOS CERRADOS", (30, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-            else:
-                CLOSED_EYES_FRAMES = 0
-                eye_history.append(0)
-                cv2.putText(frame, "OJOS ABIERTOS", (30, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
-            if CLOSED_EYES_FRAMES >= FATIGUE_FRAMES:
-                cv2.putText(frame, "FATIGA DETECTADA", (30, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-                
-            if len(eye_history) > 0:
-                perclos = sum(eye_history) / len(eye_history)
-            else:
-                perclos = 0
-            
-            cv2.putText(
-                frame,
-                f"PERCLOS: {perclos:.2f}",
-                (30, 350),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255,255,255),
-                2
-            )
 
             # =====================================
             # MOUTH DETECTION (MAR)
@@ -123,24 +155,9 @@ while True:
                 h
             )
             
-            for point in mouth_coords:
-                cv2.circle(frame, point, 2, (255, 0, 0), -1)
+            mar_history.append(mar)
+            smooth_mar = sum(mar_history) / len(mar_history)
             
-            cv2.putText(frame, f"MAR: {mar:.2f}", (30, 200),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-            
-            cv2.putText(frame, f"MOUTH FRAMES: {MOUTH_OPEN_FRAMES}", (30, 300),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-            
-            if mar > MAR_THRESHOLD:
-                MOUTH_OPEN_FRAMES += 1
-            else:
-                MOUTH_OPEN_FRAMES = 0
-            
-            if MOUTH_OPEN_FRAMES >= YAWN_FRAMES:
-                cv2.putText(frame, "BOSTEZO DETECTADO", (30, 250),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-
             # =====================================
             # HEAD POSE LANDMARKS
             # =====================================
@@ -150,41 +167,330 @@ while True:
                 h
             )
             
-            for point in head_points:
-                cv2.circle(frame, point, 4, (0, 255, 255), -1)
+            yaw_history.append(yaw)
+            smooth_yaw = sum(yaw_history) / len(yaw_history)
+            pitch_history.append(pitch)
+            smooth_pitch = sum(pitch_history) / len(pitch_history)
             
-            if abs(yaw) > DISTRACTION_THRESHOLD:
-                DISTRACTION_FRAMES += 1
-            else:
-                DISTRACTION_FRAMES = 0
-                
-            cv2.putText(frame,
-                f"DISTRACTION FRAMES: {DISTRACTION_FRAMES}",
-                (30, 550),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0,255,255),
-                2)
-            
-            if DISTRACTION_FRAMES >= DISTRACTION_LIMIT:
+            # =====================================
+            # CALIBRATION
+            # =====================================
+            if not calibrated:
+
+                ear_samples.append(ear)
+                mar_samples.append(mar)
+                yaw_samples.append(yaw)
+                pitch_samples.append(pitch)
+
+                elapsed = time.time() - start_time
+
                 cv2.putText(
                     frame,
-                    "DISTRACCION DETECTADA",
-                    (30, 600),
+                    "CALIBRANDO...",
+                    (700, 50),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1,
-                    (0,0,255),
+                    (0,255,255),
                     3
                 )
+                cv2.putText(
+                    frame,
+                    "MIRE AL FRENTE Y NO HABLE",
+                    (600, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0,255,255),
+                    2
+                )
+
+                if elapsed >= 5:
+
+                    current_ear_threshold = calibrate_ear(ear_samples)
+                    current_mar_threshold = calibrate_mar(mar_samples)
+                    baseline_yaw = np.mean(yaw_samples)
+                    baseline_pitch = np.mean(pitch_samples)
+                    print("Baseline Yaw:", baseline_yaw)
+                    print("Baseline Pitch:", baseline_pitch)
+                    print("Mean MAR:", np.mean(mar_samples))
+                    print("Std MAR:", np.std(mar_samples))
+                    print("Threshold MAR:", current_mar_threshold)
+
+                    calibrated = True
+
+                    print("Calibracion completada")
+                    
+            else:
+                if smooth_ear < current_ear_threshold:
+                    CLOSED_EYES_FRAMES += 1
+                    eye_history.append(1)
+                    cv2.putText(frame, "OJOS CERRADOS", (30, 50),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                else:
+                    CLOSED_EYES_FRAMES = 0
+                    eye_history.append(0)
+                    cv2.putText(frame, "OJOS ABIERTOS", (30, 50),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+                if CLOSED_EYES_FRAMES >= FATIGUE_FRAMES:
+                    fatigue_detected = True
+                    cv2.putText(frame, "FATIGA DETECTADA", (30, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                    
+                microsleep_detected = detect_microsleep(
+                    CLOSED_EYES_FRAMES,
+                    MICROSLEEP_FRAMES
+                )
+                
+                if microsleep_detected:
+                    cv2.putText(frame, "MICROSUENO DETECTADO", (30, 650),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                    
+                perclos = (
+                    sum(eye_history) / len(eye_history)
+                    if eye_history
+                    else 0
+                )
+                session_metrics.add_perclos(perclos)
+                
+                cv2.putText(
+                    frame,
+                    f"PERCLOS: {perclos:.2f}",
+                    (30, 350),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255,255,255),
+                    2
+                )
+                
+                for point in mouth_coords:
+                    cv2.circle(frame, point, 2, (255, 0, 0), -1)
+                
+                cv2.putText(frame, f"MAR: {smooth_mar:.2f}", (30, 200),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+                
+                cv2.putText(frame, f"MOUTH FRAMES: {MOUTH_OPEN_FRAMES}", (30, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+                
+                if smooth_mar > current_mar_threshold:
+                    MOUTH_OPEN_FRAMES += 1
+                else:
+                    MOUTH_OPEN_FRAMES = 0
+                
+                if MOUTH_OPEN_FRAMES >= YAWN_FRAMES:
+                    yawn_detected = True
+                    log_event("YAWN")
+                    cv2.putText(frame, "BOSTEZO DETECTADO", (30, 250),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                
+                yaw_offset = abs(smooth_yaw - baseline_yaw)
+                pitch_offset = smooth_pitch - baseline_pitch
+                
+                cv2.putText(
+                    frame,
+                    f"YAW OFFSET: {yaw_offset:.2f}",
+                    (700, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255,255,255),
+                    2
+                )
+
+                cv2.putText(
+                    frame,
+                    f"PITCH OFFSET: {pitch_offset:.2f}",
+                    (700, 350),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255,255,255),
+                    2
+                )
+                
+                for point in head_points:
+                    cv2.circle(frame, point, 4, (0, 255, 255), -1)
+                
+                if yaw_offset > DISTRACTION_THRESHOLD:
+                    DISTRACTION_FRAMES += 1
+                else:
+                    DISTRACTION_FRAMES = 0
+                    
+                if (
+                    pitch_offset < PITCH_DOWN_THRESHOLD
+                    or
+                    pitch_offset > PITCH_UP_THRESHOLD
+                ):
+                    VERTICAL_DISTRACTION_FRAMES += 1
+                else:
+                    VERTICAL_DISTRACTION_FRAMES = 0
+                    
+                cv2.putText(
+                    frame,
+                    f"VERT DISTRACTION: {VERTICAL_DISTRACTION_FRAMES}",
+                    (600, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255,255,0),
+                    2
+                )
+                    
+                cv2.putText(frame,
+                    f"DISTRACTION FRAMES: {DISTRACTION_FRAMES}",
+                    (30, 550),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0,255,255),
+                    2)
+                
+                if DISTRACTION_FRAMES >= DISTRACTION_LIMIT:
+                    distraction_detected = True
+                    log_event("DISTRACTION")
+                    cv2.putText(
+                        frame,
+                        "DISTRACCION DETECTADA",
+                        (30, 600),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0,0,255),
+                        3
+                    )
+                    
+                if VERTICAL_DISTRACTION_FRAMES >= VERTICAL_DISTRACTION_LIMIT:
+                    vertical_distraction_detected = True
+                    cv2.putText(
+                        frame,
+                        "DISTRACCION VERTICAL",
+                        (600, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0,0,255),
+                        3
+                    )
+                    
+                driver_state = get_driver_state(
+                    perclos,
+                    fatigue_detected,
+                    yawn_detected,
+                    distraction_detected,
+                    vertical_distraction_detected
+                )
+                
+                risk_score = calculate_risk_score(
+                    perclos,
+                    fatigue_detected,
+                    yawn_detected,
+                    distraction_detected,
+                    vertical_distraction_detected,
+                    microsleep_detected
+                )
+                session_metrics.add_risk(risk_score)
+                risk_level = get_risk_level(risk_score)
+                
+                # =========================
+                # EVENT LOGGER
+                # =========================
+                if yawn_detected and not prev_yawn:
+                    session_metrics.yawns += 1
+                    log_event("YAWN_STARTED")
+
+                if not yawn_detected and prev_yawn:
+                    log_event("YAWN_ENDED")
+
+                prev_yawn = yawn_detected
+                
+                if distraction_detected and not prev_distraction:
+                    session_metrics.distractions += 1
+                    log_event("DISTRACTION_STARTED")
+                    save_event_frame(
+                        frame,
+                        "distraction"
+                    )
+
+                if not distraction_detected and prev_distraction:
+                    log_event("DISTRACTION_ENDED")
+
+                prev_distraction = distraction_detected
+                
+                if vertical_distraction_detected and not prev_vertical_distraction:
+                    session_metrics.vertical_distractions += 1
+                    log_event("VERTICAL_DISTRACTION_STARTED")
+                    save_event_frame(
+                        frame,
+                        "vertical_distraction"
+                    )
+
+                if (
+                    not vertical_distraction_detected
+                    and prev_vertical_distraction
+                ):
+                    log_event("VERTICAL_DISTRACTION_ENDED")
+
+                prev_vertical_distraction = vertical_distraction_detected
+                
+                if fatigue_detected and not prev_fatigue:
+                    session_metrics.fatigue_events += 1
+                    log_event("FATIGUE_STARTED")
+                    play_alert()
+                    save_event_frame(
+                        frame,
+                        "fatigue"
+                    )
+
+                if not fatigue_detected and prev_fatigue:
+                    log_event("FATIGUE_ENDED")
+
+                prev_fatigue = fatigue_detected
+                
+                if microsleep_detected and not prev_microsleep:
+                    session_metrics.microsleeps += 1
+                    log_event("MICROSLEEP_STARTED")
+                    play_alert()
+                    save_event_frame(
+                        frame,
+                        "microsleep"
+                    )
+
+                if not microsleep_detected and prev_microsleep:
+                    log_event("MICROSLEEP_ENDED")
+
+                prev_microsleep = microsleep_detected
+                
+                cv2.putText(frame, f"ESTADO: {driver_state}", (700, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255),3)
+                
+                cv2.putText(frame, f"RIESGO: {risk_score}/100", (700, 200),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 3)
+                
+                cv2.putText(frame, f"RISK LEVEL: {risk_level}", (700, 250),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+                
+                cv2.putText(frame, f"YAW: {yaw:.2f}", (30, 400),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+
+                cv2.putText(frame, f"PITCH: {pitch:.2f}", (30, 450),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+
+                cv2.putText(frame, f"ROLL: {roll:.2f}", (30, 500),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+    else:
+        FACE_MISSING_FRAMES += 1
+        if FACE_MISSING_FRAMES >= FACE_MISSING_LIMIT:
+            face_missing_detected = True
+            cv2.putText(frame, "CONDUCTOR NO DETECTADO", (700, 350),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
             
-            cv2.putText(frame, f"YAW: {yaw:.2f}", (30, 400),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
-
-            cv2.putText(frame, f"PITCH: {pitch:.2f}", (30, 450),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
-
-            cv2.putText(frame, f"ROLL: {roll:.2f}", (30, 500),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+    face_missing_detected = (
+        FACE_MISSING_FRAMES >= FACE_MISSING_LIMIT
+    )
+    
+    if face_missing_detected and not prev_face_missing:
+        session_metrics.face_missing_events += 1
+        log_event("FACE_MISSING_STARTED")
+    if not face_missing_detected and prev_face_missing:
+        log_event("FACE_MISSING_ENDED")
+    prev_face_missing = face_missing_detected
+    
+    if face_missing_detected:
+        cv2.putText(frame, "CONDUCTOR NO DETECTADO", (700, 350),
+            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
 
     # Open a window
     cv2.imshow("Deteccion Facial", frame)
@@ -192,6 +498,20 @@ while True:
     # Escape with "ESC"
     if cv2.waitKey(1) & 0xFF == 27:
         break
+
+#Session Summary
+print("\n===== SESSION SUMMARY =====")
+print("Duration:", session_metrics.duration_seconds())
+print("Yawns:", session_metrics.yawns)
+print("Fatigue Events:", session_metrics.fatigue_events)
+print("Microsleeps:", session_metrics.microsleeps)
+print("Distractions:", session_metrics.distractions)
+print("Vertical Distractions:", session_metrics.vertical_distractions)
+print("Face Missing:", session_metrics.face_missing_events)
+print("Average PERCLOS:", round(session_metrics.average_perclos(), 3))
+print("Average Risk:", round(session_metrics.average_risk(), 2))
+print("Max Risk:", session_metrics.max_risk())
+save_session(session_metrics)
 
 # Free up resources
 cap.release()
